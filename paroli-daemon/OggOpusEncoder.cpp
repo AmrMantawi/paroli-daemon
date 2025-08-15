@@ -6,6 +6,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <iostream>
 #include <unistd.h>
 #include <span>
 #include <stdexcept>

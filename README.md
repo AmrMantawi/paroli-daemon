@@ -13,8 +13,6 @@ Before building, you will need to fulfill the following dependencies
 * onnxruntime (1.14 or 1.15)
 * A C++20 capable compiler
 
-(API/Web server)
-* Drogon
 * libsoxr
 * libopusenc
     * You'll need to build this from source if on Ubuntu 22.04. Package available starting on 23.04
@@ -42,35 +40,7 @@ Afterwards run `paroli-cli` and type into the console to synthesize speech. Plea
 [2023-12-23 03:13:12.452] [paroli] [info] Real-time factor: 0.16085024956315996 (infer=2.201744556427002 sec, audio=13.688163757324219 sec)
 ```
 
-### The API server
 
-An web API server is also provided so other applications can easily perform text to speech. For details, please refer to the [web API document](paroli-server/docs/web_api.md) for details. By default, a demo UI can be accessed at the root of the URL. The API server supports both responding with compressed audio to reduce bandwidth requirement and streaming audio via WebSocket. 
-
-To run it:
-
-```bash
-./paroli-server --encoder /path/to/your/encoder.onnx --decoder /path/to/your/decoder.onnx -c /path/to/your/model.json --ip 0.0.0.0 --port 8848
-```
-
-And to invoke TSS
-
-```bash
-curl http://your.server.address:8848/api/v1/synthesise -X POST -H 'Content-Type: application/json' -d '{"text": "To be or not to be, that is the question"}' > test.opus
-```
-
-Demo:
-
-[![Watch the video](https://img.youtube.com/vi/QkIF9FBrAM8/maxresdefault.jpg)](https://youtu.be/QkIF9FBrAM8)
-
-#### Authentication
-
-To enable use cases where the service is exposed for whatever reason. The API server supports a basic authentication scheme. The `--auth` flag will generate a bearer token that is different every time and both websocket and HTTP synthesis API will only work if enabled. `--auth [YOUR_TOKEN]` will set the token to YOUR_TOKEN. Furthermore setting the `PAROLI_TOKEN` environment variable will set the bearer token to whatever the environment variable is set to.
-
-```plaintext
-Authentication: Bearer <insert the token>
-```
-
-**The Web UI will not work when authentication is enabled**
 
 ## Obtaining models
 
@@ -126,17 +96,144 @@ To use RKNN for inference, simply pass the RKNN model in the CLI. An error will 
 #                                      The only change
 ```
 
-## Developer notes
+## paroli-daemon (persistent CLI)
 
-TODO:
+`paroli-daemon` is a resident, low-latency, non-network TTS process that keeps models hot in memory and communicates over stdin/stdout using line-delimited JSON (JSONL). It provides both streaming and non-streaming synthesis with support for direct audio playback.
 
-- [ ] Code cleanup
-- [ ] Investigate ArmNN to accelerate encoder inference
-- [ ] Better handling for authentication
-* RKNN
-    - [ ] Add dynamic shape support when Rockchip fixes them
-    - [ ] Try using quantization see if the speedup is worth the lowered quality
+### Build
 
-## Notes
+`paroli-daemon` builds by default. You can disable via CMake option:
 
-There's no good way to reduce synthesis latency on RK3588 besides Rockchip improving rknnrt and their compiler. The encoder is a dynamic graph thus RKNN won't work. And how they implement multi-NPU co-process prohibits faster single batch inference. Multi batch can be made faster but I don't see the value of it as it is already fast enough for home use.
+```bash
+cmake .. -DBUILD_DAEMON=OFF
+```
+
+### Quickstart
+
+Basic usage:
+```bash
+echo '{"text":"Hello world","format":"opus"}' | ./paroli-daemon \
+  --encoder ENC.onnx --decoder DEC.onnx -c model.json --espeak_data ./espeak-ng-data > out.opus
+```
+
+Direct audio playback:
+```bash
+echo '{"text":"Hello world","format":"pcm"}' | ./paroli-daemon \
+  --encoder ENC.onnx --decoder DEC.onnx -c model.json --play --volume 0.8
+```
+
+### Features
+
+- **Multiple output formats**: PCM (raw), WAV, and Opus
+- **Direct audio playback**: Play synthesized speech directly through speakers
+- **Volume control**: Adjust playback volume (0.0 to 1.0)
+- **Streaming support**: Low-latency chunked audio output
+- **Concurrent processing**: Multiple synthesis jobs with configurable concurrency
+- **Robust error handling**: Graceful error reporting and recovery
+- **Graceful shutdown**: Handles SIGINT/SIGTERM properly
+
+### Command Line Options
+
+**Model Configuration:**
+- `--encoder FILE` - Path to encoder model file
+- `--decoder FILE` - Path to decoder model file  
+- `-c, --config FILE` - Path to model config file
+- `--espeak_data DIR` - Path to espeak-ng data directory
+- `--accelerator STR` - Accelerator for ONNX (e.g., cuda, tensorrt)
+
+**Output Control:**
+- `--play` - Play audio directly to speakers (PCM format only)
+- `--volume FLOAT` - Volume level for audio playback (0.0 to 1.0)
+- `--output FILE` - Write output to file instead of stdout
+- `--stream` - Enable length-prefixed chunked streaming
+
+**Processing:**
+- `--max-concurrency N` - Number of concurrent jobs (default 1)
+- `--jsonl` - JSON-in/JSON-out only (no logs to stdout)
+
+**Debugging:**
+- `--debug` - Enable debug logging
+- `-q, --quiet` - Suppress all logging
+
+### Input Protocol
+
+Send JSON objects via stdin, one per line:
+
+```json
+{"text": "Hello world", "format": "pcm", "sample_rate": 22050}
+```
+
+**Fields:**
+- `text` (required) - Text to synthesize
+- `format` (optional) - Output format: `"pcm"`, `"wav"`, or `"opus"` (default: `"wav"`)
+- `sample_rate` (optional) - Target sample rate for container formats
+
+### Output Protocol
+
+**Non-streaming mode:**
+- `pcm`: Raw 16-bit little-endian mono PCM samples
+- `wav`: Complete WAV file bytes
+- `opus`: Complete Opus file bytes
+
+**Streaming mode (`--stream`):**
+- Audio chunks prefixed with 4-byte little-endian length headers
+- Each chunk contains audio data in the specified format
+
+**Error output (stderr):**
+```json
+{"error": "Error message"}
+```
+
+### Examples
+
+**Basic synthesis:**
+```bash
+echo '{"text":"Hello world","format":"wav"}' | ./paroli-daemon \
+  --encoder model/encoder.onnx --decoder model/decoder.onnx -c model/config.json > output.wav
+```
+
+**Direct playback with volume control:**
+```bash
+echo '{"text":"Hello world","format":"pcm"}' | ./paroli-daemon \
+  --encoder model/encoder.onnx --decoder model/decoder.onnx -c model/config.json \
+  --play --volume 0.7
+```
+
+**Streaming synthesis:**
+```bash
+echo '{"text":"Hello world","format":"opus","sample_rate":24000}"' | ./paroli-daemon \
+  --encoder model/encoder.onnx --decoder model/decoder.onnx -c model/config.json \
+  --stream > output.opus
+```
+
+**Multiple concurrent requests:**
+```bash
+echo '{"text":"Request 1","format":"pcm"}' > requests.txt
+echo '{"text":"Request 2","format":"pcm"}' >> requests.txt
+cat requests.txt | ./paroli-daemon \
+  --encoder model/encoder.onnx --decoder model/decoder.onnx -c model/config.json \
+  --max-concurrency 2 --play
+```
+
+### Lifecycle and Robustness
+
+- **Graceful shutdown**: Handles SIGINT/SIGTERM signals
+- **Request management**: Rejects new requests during shutdown, finishes in-flight ones
+- **Error recovery**: Continues processing after individual request failures
+- **Resource cleanup**: Properly releases audio devices and model resources
+
+### Security
+
+The daemon communicates strictly over stdin/stdout and is not network exposed. No external network connections are made.
+
+### Testing
+
+Run the smoke test with your models:
+
+```bash
+export PAROLI_TEST_ENCODER=/path/enc.onnx
+export PAROLI_TEST_DECODER=/path/dec.onnx
+export PAROLI_TEST_CONFIG=/path/model.json
+export PAROLI_TEST_ESPEAK=/path/espeak-ng-data
+ctest -R paroli-daemon-smoke --output-on-failure
+```

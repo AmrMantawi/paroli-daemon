@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <memory>
 #include <unistd.h>
 #include <opus/opusenc.h>
 
