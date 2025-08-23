@@ -58,18 +58,38 @@ StreamingOggOpusEncoder::StreamingOggOpusEncoder(size_t sr, size_t nchannels, si
 std::vector<uint8_t> StreamingOggOpusEncoder::encode(const std::vector<short>& data)
 {
     oggBuffer.clear();
+    
+    // Ensure we don't process empty data
+    if (data.empty()) {
+        return {};
+    }
+    
     audioBuffer.insert(audioBuffer.end(), data.begin(), data.end());
     const size_t frame_size = 960;
-    if(audioBuffer.size() < frame_size * nchannels)
+    const size_t samples_needed = frame_size * nchannels;
+    
+    if(audioBuffer.size() < samples_needed)
         return {};
+        
     size_t i = 0;
     size_t end = (audioBuffer.size() / frame_size) * frame_size;
+    
+    // Process complete frames only
     for(i = 0; i < end; i += frame_size) {
+        // Ensure we don't read beyond buffer
+        if (i + frame_size > audioBuffer.size()) {
+            break;
+        }
+        
         int err = ope_encoder_write(encoder.get(), audioBuffer.data() + i, frame_size);
         if(err != 0)
             throw std::runtime_error("opusenc failed to encode");
     }
-    audioBuffer.erase(audioBuffer.begin(), audioBuffer.begin() + end);
+    
+    // Remove processed samples, keep remainder for next call
+    if (i > 0) {
+        audioBuffer.erase(audioBuffer.begin(), audioBuffer.begin() + i);
+    }
 
     return oggBuffer;
 }

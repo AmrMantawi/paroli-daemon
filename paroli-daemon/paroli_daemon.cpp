@@ -61,6 +61,7 @@ vector<uint8_t> ParoliSynthesizer::synthesizeWav(const std::string& text) {
 
 vector<int16_t> ParoliSynthesizer::synthesizePcm(const std::string& text) {
     vector<int16_t> audio;
+    audio.clear(); // Ensure buffer starts clean
     piper::SynthesisResult result;
     auto cb = [&]() {};
     piper::textToAudio(cfg_, voice_, text, audio, result, cb);
@@ -68,9 +69,11 @@ vector<int16_t> ParoliSynthesizer::synthesizePcm(const std::string& text) {
     // If audio is empty, try using the streaming approach to collect all audio
     if (audio.empty()) {
         vector<int16_t> allAudio;
+        allAudio.clear(); // Ensure buffer starts clean
         auto streamCb = [&]() {
             if (!audio.empty()) {
                 allAudio.insert(allAudio.end(), audio.begin(), audio.end());
+                audio.clear(); // Clear temp buffer after copying
             }
         };
         piper::textToAudio(cfg_, voice_, text, audio, result, streamCb);
@@ -85,7 +88,10 @@ void ParoliSynthesizer::synthesizeStreamPcm(const std::string& text,
     vector<int16_t> chunk;
     piper::SynthesisResult result;
     auto cb = [&]() {
-        if (!chunk.empty()) onChunk(std::span<const int16_t>(chunk.data(), chunk.size()));
+        if (!chunk.empty()) {
+            onChunk(std::span<const int16_t>(chunk.data(), chunk.size()));
+            chunk.clear(); // Clear chunk after processing to prevent reuse of stale data
+        }
     };
     piper::textToAudio(cfg_, voice_, text, chunk, result, cb);
 }
@@ -151,10 +157,14 @@ bool ParoliSynthesizer::speak(const std::string& text) {
             return false;
         }
         
-        // Apply volume
+        // Apply volume with overflow protection
         if (volume_ != 1.0f) {
             for (auto& sample : audio) {
-                sample = static_cast<int16_t>(sample * volume_);
+                int32_t scaled = static_cast<int32_t>(sample * volume_);
+                // Clamp to int16_t range to prevent overflow
+                sample = static_cast<int16_t>(std::clamp(scaled, 
+                    static_cast<int32_t>(std::numeric_limits<int16_t>::min()),
+                    static_cast<int32_t>(std::numeric_limits<int16_t>::max())));
             }
         }
         
@@ -174,10 +184,32 @@ bool ParoliSynthesizer::speak(const std::string& text) {
         snd_pcm_hw_params_set_access(handle, params, SND_PCM_ACCESS_RW_INTERLEAVED);
         snd_pcm_hw_params_set_format(handle, params, SND_PCM_FORMAT_S16_LE);
         snd_pcm_hw_params_set_channels(handle, params, 1);
-        snd_pcm_hw_params_set_rate(handle, params, nativeSampleRate(), 0);
+        
+        // Set sample rate more safely
+        unsigned int rate = nativeSampleRate();
+        if ((err = snd_pcm_hw_params_set_rate_near(handle, params, &rate, 0)) < 0) {
+            lastError_ = "Cannot set sample rate: " + std::string(snd_strerror(err));
+            snd_pcm_close(handle);
+            return false;
+        }
+        
+        // Set buffer size to prevent underruns
+        snd_pcm_uframes_t buffer_size = audio.size();
+        if ((err = snd_pcm_hw_params_set_buffer_size_near(handle, params, &buffer_size)) < 0) {
+            lastError_ = "Cannot set buffer size: " + std::string(snd_strerror(err));
+            snd_pcm_close(handle);
+            return false;
+        }
         
         if ((err = snd_pcm_hw_params(handle, params)) < 0) {
             lastError_ = "Cannot set parameters: " + std::string(snd_strerror(err));
+            snd_pcm_close(handle);
+            return false;
+        }
+        
+        // Prepare the PCM device
+        if ((err = snd_pcm_prepare(handle)) < 0) {
+            lastError_ = "Cannot prepare audio device: " + std::string(snd_strerror(err));
             snd_pcm_close(handle);
             return false;
         }

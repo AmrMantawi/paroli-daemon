@@ -186,12 +186,14 @@ static bool synthesizeOne(const RunConfig &cfg, const Request &req, ostream &out
                     cerr << "Failed to speak: " << gSynth->getLastError() << endl;
                 }
             } else if (cfg.stream) {
-                gSynth->synthesizeStreamPcm(req.text, [&](std::span<const int16_t> view) {
+                            gSynth->synthesizeStreamPcm(req.text, [&](std::span<const int16_t> view) {
+                if (!view.empty() && view.data() != nullptr) {
                     uint32_t bytes = static_cast<uint32_t>(view.size() * sizeof(int16_t));
                     auto hdr = toLittleEndian4(bytes);
                     writeAll(*dst, reinterpret_cast<const char *>(hdr.data()), hdr.size());
                     writeAll(*dst, reinterpret_cast<const char *>(view.data()), bytes);
-                });
+                }
+            });
             } else {
                 auto audio = gSynth->synthesizePcm(req.text);
                 writeAll(*dst, reinterpret_cast<const char *>(audio.data()), audio.size() * sizeof(int16_t));
@@ -230,6 +232,9 @@ static bool synthesizeOne(const RunConfig &cfg, const Request &req, ostream &out
                         writeAll(*dst, reinterpret_cast<const char *>(ogg.data()), ogg.size());
                     }
                 }
+                
+                // Clear chunk after processing to prevent reuse
+                chunk.clear();
             };
 
             gSynth->synthesizeStreamPcm(req.text, [&](std::span<const int16_t> view){
