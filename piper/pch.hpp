@@ -7,9 +7,10 @@
 #include <map>
 #include <algorithm>
 
-
-#include <spdlog/spdlog.h>
+// Handle spdlog/fmt compatibility for cross-compilation
+#define SPDLOG_FMT_EXTERNAL 1
 #include <fmt/core.h>
+#include <spdlog/spdlog.h>
 
 #include <nlohmann/json.hpp>
 

@@ -9,25 +9,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
 
-set(ORT_ROOT "" CACHE STRING "Path to ONNX Runtime root directory")
-if (ORT_ROOT STREQUAL "")
-    message(FATAL_ERROR "ORT_ROOT must be set")
-endif()
-
-include_directories(${ORT_ROOT}/include)
-link_directories(${ORT_ROOT}/lib)
-
-set(PIPER_PHONEMIZE_ROOT "" CACHE STRING "Path to piper-phonemize root directory")
-if (PIPER_PHONEMIZE_ROOT STREQUAL "")
-    message(FATAL_ERROR "PIPER_PHONEMIZE_ROOT must be set")
-endif()
-
 include_directories(${PIPER_PHONEMIZE_ROOT}/include)
 link_directories(${PIPER_PHONEMIZE_ROOT}/lib)
 
-# Add system include directories
-include_directories(SYSTEM /usr/include /usr/include/opus)
+# Add system include directories (only for native builds)
+if(NOT CMAKE_CROSSCOMPILING)
+    include_directories(SYSTEM /usr/include /usr/include/opus)
+endif()
 
+# find_package(onnxruntime REQUIRED)
+# find_package(piper_phonemize REQUIRED)
 find_package(fmt REQUIRED)
 find_package(Opus REQUIRED)
 
